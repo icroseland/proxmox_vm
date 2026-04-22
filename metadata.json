@@ -1,0 +1,30 @@
+{
+  "name": "local-proxmox_vm",
+  "version": "0.1.0",
+  "author": "local",
+  "summary": "Manage Proxmox virtual machines through the Proxmox API",
+  "license": "Apache-2.0",
+  "source": "https://example.invalid/local/proxmox_vm",
+  "dependencies": [
+    {
+      "name": "puppetlabs-stdlib",
+      "version_requirement": ">= 8.0.0"
+    }
+  ],
+  "operatingsystem_support": [
+    {
+      "operatingsystem": "Debian",
+      "operatingsystemrelease": ["11", "12"]
+    },
+    {
+      "operatingsystem": "RedHat",
+      "operatingsystemrelease": ["8", "9"]
+    }
+  ],
+  "requirements": [
+    {
+      "name": "puppet",
+      "version_requirement": ">= 7.0.0"
+    }
+  ]
+}
