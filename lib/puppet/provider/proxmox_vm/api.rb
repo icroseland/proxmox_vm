@@ -2,6 +2,7 @@ require 'json'
 require 'net/http'
 require 'openssl'
 require 'uri'
+require 'cgi'
 
 Puppet::Type.type(:proxmox_vm).provide(:api) do
   desc 'Manage Proxmox VMs with the Proxmox API using token authentication.'
@@ -13,18 +14,23 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
   end
 
   def create
-    fail Puppet::Error, 'node is required' if resource[:node].nil?
-    fail Puppet::Error, 'vmid is required' if resource[:vmid].nil?
+    fail Puppet::Error, 'node is required' if resource[:node].nil? || resource[:node].to_s.empty?
+    fail Puppet::Error, 'vmid is required' if resource[:vmid].nil? || resource[:vmid].to_s.empty?
+    fail Puppet::Error, 'api_token_id is required' if resource[:api_token_id].nil? || resource[:api_token_id].to_s.empty?
+    fail Puppet::Error, 'api_token_secret is required' if api_token_secret.to_s.empty?
     return if vm_exists_anywhere?
 
     payload = {
       vmid: resource[:vmid],
+      name: resource[:name],
       cores: resource[:cores],
       memory: resource[:memory],
       description: resource[:description]
     }.reject { |_k, v| v.nil? }
 
-    post("nodes/#{resource[:node]}/qemu", payload)
+    task = post("nodes/#{resource[:node]}/qemu", payload)
+    wait_for_task(task)
+    @current_vm = nil
     configure_status
   end
 
@@ -32,10 +38,13 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
     return unless current_vm
 
     if current_status == 'running'
-      post("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/status/stop")
+      stop_task = post("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/status/stop")
+      wait_for_task(stop_task)
     end
 
-    delete("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}")
+    delete_task = delete("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}")
+    wait_for_task(delete_task)
+    @current_vm = nil
   end
 
   def status
@@ -46,23 +55,30 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
   end
 
   def status=(value)
-    if value.to_s == 'running'
-      post("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/status/start")
-    else
-      post("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/status/stop")
-    end
+    task = if value.to_s == 'running'
+             post("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/status/start")
+           else
+             post("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/status/stop")
+           end
+    wait_for_task(task)
   end
 
   def cores=(value)
-    put("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/config", { cores: value })
+    task = put("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/config", { cores: value })
+    wait_for_task(task)
+    @current_vm = nil
   end
 
   def memory=(value)
-    put("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/config", { memory: value })
+    task = put("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/config", { memory: value })
+    wait_for_task(task)
+    @current_vm = nil
   end
 
   def description=(value)
-    put("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/config", { description: value })
+    task = put("nodes/#{resource[:node]}/qemu/#{resource[:vmid]}/config", { description: value })
+    wait_for_task(task)
+    @current_vm = nil
   end
 
   def node=(value)
@@ -139,10 +155,13 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
     http.verify_mode = verify_ssl? ? OpenSSL::SSL::VERIFY_PEER : OpenSSL::SSL::VERIFY_NONE
 
     req = http_class.new(uri)
-    req['Authorization'] = "PVEAPIToken=#{resource[:api_token_id]}=#{resource[:api_token_secret]}"
+    req['Authorization'] = "PVEAPIToken=#{resource[:api_token_id]}=#{api_token_secret}"
     req['Accept'] = 'application/json'
-    req['Content-Type'] = 'application/json'
-    req.body = JSON.dump(payload) if payload
+
+    if payload
+      req['Content-Type'] = 'application/x-www-form-urlencoded'
+      req.set_form_data(payload.transform_values(&:to_s))
+    end
 
     response = http.request(req)
 
@@ -157,11 +176,48 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
     raise Puppet::Error, "Invalid JSON response from Proxmox for #{path}: #{e.message}"
   end
 
+  def wait_for_task(task_upid)
+    return if task_upid.nil? || task_upid.to_s.empty?
+
+    decoded = CGI.unescape(task_upid.to_s)
+    parts = decoded.split(':')
+    fail Puppet::Error, "Unexpected Proxmox task format: #{task_upid}" if parts.length < 7
+
+    node = parts[1]
+    timeout = 300
+    start = Time.now
+
+    loop do
+      response = get("nodes/#{node}/tasks/#{CGI.escape(decoded)}/status")
+      exit_status = response.dig('data', 'exitstatus')
+      status = response.dig('data', 'status')
+
+      return if status == 'stopped' && exit_status == 'OK'
+
+      if status == 'stopped' && exit_status && exit_status != 'OK'
+        raise Puppet::Error, "Proxmox task #{decoded} failed with exit status #{exit_status}"
+      end
+
+      if Time.now - start > timeout
+        raise Puppet::Error, "Timed out waiting for Proxmox task #{decoded}"
+      end
+
+      sleep 2
+    end
+  end
+
   def api_url_with_slash
     url = resource[:api_url]
     fail Puppet::Error, 'api_url is required' if url.nil? || url.empty?
 
     url.end_with?('/') ? url : "#{url}/"
+  end
+
+  def api_token_secret
+    secret = resource[:api_token_secret]
+    return '' if secret.nil?
+
+    secret.respond_to?(:unwrap) ? secret.unwrap : secret.to_s
   end
 
   def verify_ssl?
