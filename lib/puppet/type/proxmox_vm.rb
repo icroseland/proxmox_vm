@@ -57,6 +57,15 @@ Puppet::Type.newtype(:proxmox_vm) do
     sensitive true
   end
 
+  newparam(:verify_ssl) do
+    desc 'Whether to verify the Proxmox API TLS certificate. Defaults to true.'
+    newvalues(:true, :false, true, false)
+    defaultto :true
+    munge do |value|
+      value.to_s == 'true' ? :true : :false
+    end
+  end
+
   autorequire(:class) do
     ['proxmox_vm']
   end
