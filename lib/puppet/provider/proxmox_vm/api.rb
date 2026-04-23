@@ -119,7 +119,7 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
     uri = URI.join(api_url_with_slash, path)
     http = Net::HTTP.new(uri.host, uri.port)
     http.use_ssl = uri.scheme == 'https'
-    http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+    http.verify_mode = verify_ssl? ? OpenSSL::SSL::VERIFY_PEER : OpenSSL::SSL::VERIFY_NONE
 
     req = http_class.new(uri)
     req['Authorization'] = "PVEAPIToken=#{resource[:api_token_id]}=#{resource[:api_token_secret]}"
@@ -145,5 +145,9 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
     fail Puppet::Error, 'api_url is required' if url.nil? || url.empty?
 
     url.end_with?('/') ? url : "#{url}/"
+  end
+
+  def verify_ssl?
+    resource[:verify_ssl].to_s == 'true'
   end
 end
