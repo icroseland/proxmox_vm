@@ -15,6 +15,7 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
   def create
     fail Puppet::Error, 'node is required' if resource[:node].nil?
     fail Puppet::Error, 'vmid is required' if resource[:vmid].nil?
+    return if vm_exists_anywhere?
 
     payload = {
       vmid: resource[:vmid],
@@ -90,6 +91,22 @@ Puppet::Type.type(:proxmox_vm).provide(:api) do
     return nil if e.message.include?('404')
 
     raise
+  end
+
+  def vm_exists_anywhere?
+    response = get('cluster/resources?type=vm')
+    vm_found = response.fetch('data', []).any? do |vm|
+      vm['vmid'].to_s == resource[:vmid].to_s
+    end
+
+    if vm_found
+      Puppet.notice("Skipping VM creation for #{resource[:name]}: VMID #{resource[:vmid]} already exists in Proxmox.")
+    end
+
+    vm_found
+  rescue Puppet::Error => e
+    Puppet.warning("Unable to verify whether VMID #{resource[:vmid]} already exists before creation: #{e.message}")
+    false
   end
 
   def configure_status
